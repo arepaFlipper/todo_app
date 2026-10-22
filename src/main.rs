@@ -7,18 +7,21 @@ fn main() {
 #[component]
 fn App() -> impl IntoView {
     let (task_title, task_title_writer) = signal(String::new());
-    let (tasks, tasks_writer) = signal(Vec::<String>::new());
+    let (tasks, tasks_writer) = signal(Vec::<Item>::new());
+
+    let (counter, counter_writer) = signal(0);
+
     view! {
         <main >
             <div>
                 <div>List of items</div>
                 <div>
                     <For
-                        each= move || tasks.get()
-                        key = |task| task.clone()
+                        each = move || tasks.get()
+                        key = |task| task.id
                         children = move |task| {
                             view! {
-                                <div>{task}</div>
+                                <div>{task.title}</div>
                             }
                         }
                     />
@@ -27,9 +30,21 @@ fn App() -> impl IntoView {
                     task_title_writer.set(event_target_value(&event));
                 } />
                 <button on:click=move |_| {
-                    tasks_writer.write().push(task_title.get())
+                        counter_writer.set(counter.get() + 1);
+
+                        tasks_writer.write().push(Item {
+                            id: counter.get(),
+                            title: task_title.get()
+                        });
                 }>Add Item</button>
+
             </div>
         </main>
     }
+}
+
+#[derive(Clone)]
+struct Item {
+    id: u32,
+    title: String,
 }
