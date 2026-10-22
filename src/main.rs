@@ -15,17 +15,20 @@ fn App() -> impl IntoView {
         <main >
             <div>
                 <div>List of items</div>
-                <div>
+                <ol>
                     <For
                         each = move || tasks.get()
                         key = |task| task.id
                         children = move |task| {
                             view! {
-                                <div>{task.title}</div>
+                                <li style="list-style-type: none; display: flex; flex-direction: row">
+                                    <h6 style="margin-right: 3px">{task.id}.</h6>
+                                    <h3>{task.title}</h3>
+                                </li>
                             }
                         }
                     />
-                </div>
+                </ol>
                 <input type="text" on:input=move|event| {
                     task_title_writer.set(event_target_value(&event));
                 } />
