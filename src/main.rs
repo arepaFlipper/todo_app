@@ -6,11 +6,14 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
-    view ! {
-        <main>
+    let (task_title, task_title_writer) = signal(String::new());
+    view! {
+        <main >
             <div>
                 <div>List of items</div>
-                <input type="text" />
+                <input type="text" on:input=move|event| {
+                    task_title_writer.set(event_target_value(&event));
+                } />
                 <button>Add Item</button>
             </div>
         </main>
