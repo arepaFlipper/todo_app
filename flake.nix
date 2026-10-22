@@ -33,6 +33,8 @@
             pkgs.wasm-bindgen-cli
             pkgs.binaryen   # Provides wasm-opt
             pkgs.tailwindcss_4  # Used by Trunk's tailwind-css asset
+            pkgs.nodejs     # Provides npx for the Vercel CLI (npx vercel)
+            pkgs.bun        # Installs the Vercel Claude plugin's packages
           ];
 
           env = {
