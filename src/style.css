@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Scan the Leptos components for class names */
+@source "./**/*.rs";
+
+:root {
+    color-scheme: light dark;
+}
