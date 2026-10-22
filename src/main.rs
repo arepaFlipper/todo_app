@@ -8,7 +8,11 @@ fn main() {
 fn App() -> impl IntoView {
     view ! {
         <main>
-            <h1>"Hello 👋🏻, world! 🌍"</h1>
+            <div>
+                <div>List of items</div>
+                <input type="text" />
+                <button>Add Item</button>
+            </div>
         </main>
     }
 }
