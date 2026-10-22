@@ -21,9 +21,9 @@ fn App() -> impl IntoView {
                         key = |task| task.id
                         children = move |task| {
                             view! {
-                                <li style="list-style-type: none; display: flex; flex-direction: row">
-                                    <h6 style="margin-right: 3px">{task.id}.</h6>
-                                    <div style="flex-grow: 1">
+                                <li >
+                                    <h6 >{task.id}.</h6>
+                                    <div >
                                         <h3>{task.title}</h3>
                                         <p>{task.description}</p>
                                     </div>
@@ -32,7 +32,7 @@ fn App() -> impl IntoView {
                         }
                     />
                 </ol>
-                <div style="display: flex; flex-flow: column">
+                <div >
                     <input type="text" on:input=move|event| {
                         task_writer.write().title = event_target_value(&event);
                     } />
