@@ -32,6 +32,7 @@
             # Common dependencies often needed by Trunk/Wasm projects
             pkgs.wasm-bindgen-cli
             pkgs.binaryen   # Provides wasm-opt
+            pkgs.tailwindcss_4  # Used by Trunk's tailwind-css asset
           ];
 
           env = {
