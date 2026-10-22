@@ -7,6 +7,7 @@ fn main() {
 #[component]
 fn App() -> impl IntoView {
     let (task_title, task_title_writer) = signal(String::new());
+    let (task, tasks_writer) = signal(Vec::<String>::new());
     view! {
         <main >
             <div>
