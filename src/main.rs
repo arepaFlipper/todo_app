@@ -141,7 +141,10 @@ fn App() -> impl IntoView {
         let Some(list) = list.get_untracked() else {
             return;
         };
-        let Some((_, row)) = task_rows(&list).into_iter().find(|(row_id, _)| *row_id == id) else {
+        let Some((_, row)) = task_rows(&list)
+            .into_iter()
+            .find(|(row_id, _)| *row_id == id)
+        else {
             return;
         };
         let grab_offset =
@@ -195,11 +198,11 @@ fn App() -> impl IntoView {
     };
 
     view! {
-        <main class="mx-auto flex max-w-xl flex-col gap-6 px-4 py-12 sm:py-20">
+        <main class="mx-auto flex max-w-xl flex-col gap-6 px-4 py-2">
             <header class="flex items-end justify-between">
                 <div>
                     <p class="text-sm font-medium text-indigo-600 dark:text-indigo-400">"Developed by arepa_flipper 🫓"</p>
-                    <h1 class="text-3xl font-bold tracking-tight">"My tasks"</h1>
+                    <h1 class="text-3xl font-bold tracking-tight">"My TODO list tasks"</h1>
                 </div>
                 <span class="rounded-full bg-indigo-100 px-3 py-1 text-sm font-semibold text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
                     {done_count} " / " {move || tasks.with(|tasks| tasks.len())} " done"
@@ -824,7 +827,11 @@ struct Drag {
 /// How far to scroll the page for a drag at `pointer_y`: negative near the top of the
 /// screen, positive near the bottom, and zero anywhere in between
 fn auto_scroll_step(pointer_y: f64) -> f64 {
-    let Some(height) = window().inner_height().ok().and_then(|height| height.as_f64()) else {
+    let Some(height) = window()
+        .inner_height()
+        .ok()
+        .and_then(|height| height.as_f64())
+    else {
         return 0.0;
     };
     // 0 at the edge of the zone, 1 at (or past) the screen's edge
@@ -854,7 +861,12 @@ fn is_interactive_target(event: &leptos::ev::PointerEvent) -> bool {
     event
         .target()
         .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-        .and_then(|element| element.closest("input, textarea, select, button, a").ok().flatten())
+        .and_then(|element| {
+            element
+                .closest("input, textarea, select, button, a")
+                .ok()
+                .flatten()
+        })
         .is_some()
 }
 
