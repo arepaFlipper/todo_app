@@ -231,7 +231,32 @@ fn App() -> impl IntoView {
                             let status = task.status;
                             let task_title = task.title;
                             let task_description = task.description;
+                            let subtasks = task.subtasks;
                             let is_done = move || status.get() == Status::Done;
+
+                            // A task is only done when all its sub-tasks are, so finishing it ticks them all
+                            let set_status = move |new_status: Status| {
+                                if new_status == Status::Done {
+                                    subtasks.with_untracked(|subtasks| {
+                                        for subtask in subtasks {
+                                            subtask.done.set(true);
+                                        }
+                                    });
+                                }
+                                status.set(new_status);
+                            };
+
+                            // ...and an unticked (or newly added) sub-task un-finishes it
+                            Effect::new(move |_| {
+                                let (open, ticked) = subtasks.with(|subtasks| {
+                                    subtasks.iter().fold((0, 0), |(open, ticked), subtask| {
+                                        if subtask.done.get() { (open, ticked + 1) } else { (open + 1, ticked) }
+                                    })
+                                });
+                                if open > 0 && status.get_untracked() == Status::Done {
+                                    status.set(if ticked > 0 { Status::InProgress } else { Status::Todo });
+                                }
+                            });
 
                             // Edits go into drafts first, so Cancel leaves the task untouched
                             let editing = RwSignal::new(false);
@@ -332,7 +357,7 @@ fn App() -> impl IntoView {
                                         class="mt-1 size-5 shrink-0 cursor-pointer accent-indigo-600"
                                         prop:checked=is_done
                                         on:change=move |event| {
-                                            status.set(if event_target_checked(&event) { Status::Done } else { Status::Todo });
+                                            set_status(if event_target_checked(&event) { Status::Done } else { Status::Todo });
                                         }
                                     />
                                     <Show
@@ -348,14 +373,14 @@ fn App() -> impl IntoView {
                                                     {move || task_title.get()}
                                                 </h3>
                                                 <p class="mt-1 text-sm whitespace-pre-line text-slate-600 dark:text-slate-400">{move || task_description.get()}</p>
-                                                <SubtaskList subtasks=task.subtasks />
+                                                <SubtaskList subtasks=subtasks />
                                                 <select
                                                     aria-label="Status"
                                                     class=move || format!(
                                                         "mt-3 cursor-pointer rounded-full px-3 py-1 text-xs font-semibold focus:ring-2 focus:ring-indigo-500/30 focus:outline-none {}",
                                                         status.get().badge_class(),
                                                     )
-                                                    on:change=move |event| status.set(Status::from_value(&event_target_value(&event)))
+                                                    on:change=move |event| set_status(Status::from_value(&event_target_value(&event)))
                                                 >
                                                     {Status::ALL.map(|option| view! {
                                                         <option value=option.value() prop:selected=move || status.get() == option>
