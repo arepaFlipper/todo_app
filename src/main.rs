@@ -1,7 +1,13 @@
+use std::time::Duration;
+
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 const STORAGE_KEY: &str = "leptos-todo.tasks";
+/// How long the "Task deleted · Undo" toast stays up
+const UNDO_TIMEOUT: Duration = Duration::from_secs(3);
+/// Fraction of the card's width a swipe must pass to delete the task
+const SWIPE_DELETE_RATIO: f64 = 0.35;
 
 fn main() {
     mount_to_body(App);
@@ -48,6 +54,36 @@ fn App() -> impl IntoView {
 
         title.set(String::new());
         description.set(String::new());
+    };
+
+    // The last deleted task and where it was, kept for a few seconds so it can be undone
+    let last_deleted = RwSignal::new(None::<(usize, Item)>);
+    let undo_timer = StoredValue::new(None::<TimeoutHandle>);
+    let clear_undo_timer = move || {
+        if let Some(timer) = undo_timer.get_value() {
+            timer.clear();
+        }
+    };
+
+    let delete_task = move |id: u32| {
+        let Some(index) = tasks.with_untracked(|tasks| tasks.iter().position(|task| task.id == id))
+        else {
+            return;
+        };
+        let item = tasks.write().remove(index);
+        last_deleted.set(Some((index, item)));
+
+        clear_undo_timer();
+        let timer = set_timeout_with_handle(move || last_deleted.set(None), UNDO_TIMEOUT).ok();
+        undo_timer.set_value(timer);
+    };
+
+    let undo_delete = move || {
+        clear_undo_timer();
+        let deleted = last_deleted.write().take();
+        if let Some((index, item)) = deleted {
+            tasks.update(|tasks| tasks.insert(index.min(tasks.len()), item));
+        }
     };
 
     view! {
@@ -130,8 +166,80 @@ fn App() -> impl IntoView {
                                 editing.set(false);
                             };
 
+                            // Swipe left to delete, on touch screens only
+                            let row = NodeRef::<leptos::html::Li>::new();
+                            let swipe_start_x = StoredValue::new(None::<f64>);
+                            let swipe_offset = RwSignal::new(0.0_f64);
+                            let swiping = RwSignal::new(false);
+
+                            let reset_swipe = move || {
+                                swipe_start_x.set_value(None);
+                                swiping.set(false);
+                                swipe_offset.set(0.0);
+                            };
+
                             view! {
-                                <li class="group flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-indigo-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-indigo-500/50">
+                                <li
+                                    node_ref=row
+                                    class="relative touch-pan-y"
+                                    on:pointerdown=move |event| {
+                                        if event.pointer_type() == "touch" && !editing.get_untracked() {
+                                            swipe_start_x.set_value(Some(event.client_x() as f64));
+                                        }
+                                    }
+                                    on:pointermove=move |event| {
+                                        let Some(start_x) = swipe_start_x.get_value() else {
+                                            return;
+                                        };
+                                        let offset = (event.client_x() as f64 - start_x).min(0.0);
+                                        // Ignore small movements, so taps on the checkbox or status still work
+                                        if !swiping.get_untracked() {
+                                            if offset > -10.0 {
+                                                return;
+                                            }
+                                            swiping.set(true);
+                                            if let Some(row) = row.get_untracked() {
+                                                let _ = row.set_pointer_capture(event.pointer_id());
+                                            }
+                                        }
+                                        swipe_offset.set(offset);
+                                    }
+                                    on:pointerup=move |_| {
+                                        if !swiping.get_untracked() {
+                                            swipe_start_x.set_value(None);
+                                            return;
+                                        }
+                                        let width = row
+                                            .get_untracked()
+                                            .map(|row| row.offset_width() as f64)
+                                            .unwrap_or(0.0);
+                                        if swipe_offset.get_untracked() < -width * SWIPE_DELETE_RATIO {
+                                            // Slide the card the rest of the way out, then delete it
+                                            swipe_start_x.set_value(None);
+                                            swiping.set(false);
+                                            swipe_offset.set(-width);
+                                            set_timeout(move || delete_task(id), Duration::from_millis(200));
+                                        } else {
+                                            reset_swipe();
+                                        }
+                                    }
+                                    on:pointercancel=move |_| reset_swipe()
+                                >
+                                <div
+                                    aria-hidden="true"
+                                    class="absolute inset-0 flex items-center justify-end rounded-xl bg-red-500 pr-5 text-white transition-opacity"
+                                    class:opacity-0=move || swipe_offset.get() == 0.0
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-6">
+                                        <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
+                                    </svg>
+                                </div>
+                                <div
+                                    class="group relative flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:border-indigo-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-indigo-500/50"
+                                    style:transform=move || format!("translateX({}px)", swipe_offset.get())
+                                    // Follow the finger exactly while dragging; animate only the snap back or slide out
+                                    style:transition=move || if swiping.get() { "none" } else { "" }
+                                >
                                     <input
                                         type="checkbox"
                                         aria-label="Mark as done"
@@ -194,19 +302,42 @@ fn App() -> impl IntoView {
                                             type="button"
                                             aria-label="Delete task"
                                             title="Delete task"
-                                            class="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-red-500/10 dark:hover:text-red-400"
-                                            on:click=move |_| tasks.write().retain(|task| task.id != id)
+                                            class="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none max-sm:hidden sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                            on:click=move |_| delete_task(id)
                                         >
                                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5">
                                                 <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
                                             </svg>
                                         </button>
                                     </div>
+                                </div>
                                 </li>
                             }
                         }
                     />
                 </ol>
+            </Show>
+
+            <Show when=move || last_deleted.with(Option::is_some)>
+                <div
+                    role="status"
+                    class="fixed inset-x-4 bottom-4 z-10 mx-auto flex max-w-sm items-center justify-between gap-3 rounded-xl bg-slate-900 py-2 pr-2 pl-4 text-sm text-white shadow-lg dark:bg-slate-100 dark:text-slate-900"
+                >
+                    <span class="truncate">
+                        "Deleted “"
+                        {move || last_deleted.with(|deleted| {
+                            deleted.as_ref().map(|(_, item)| item.title.get()).unwrap_or_default()
+                        })}
+                        "”"
+                    </span>
+                    <button
+                        type="button"
+                        class="shrink-0 rounded-lg px-3 py-1.5 font-semibold text-indigo-300 transition hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:outline-none dark:text-indigo-600 dark:hover:bg-slate-900/10"
+                        on:click=move |_| undo_delete()
+                    >
+                        "Undo"
+                    </button>
+                </div>
             </Show>
         </main>
     }
