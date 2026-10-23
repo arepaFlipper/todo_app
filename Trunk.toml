@@ -1,2 +1,8 @@
 [tools]
 tailwindcss = "4.3.3"
+
+[serve]
+# Listen on every interface, so other devices on the LAN can open
+# http://<this machine's IP>:8080 (not just localhost)
+addresses = ["0.0.0.0"]
+port = 8080
