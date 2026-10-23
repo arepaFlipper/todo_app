@@ -23,7 +23,7 @@ fn App() -> impl IntoView {
     let description = RwSignal::new(String::new());
     let tasks = RwSignal::new(initial_tasks);
 
-    // Re-runs whenever the list or any task's title, description or status changes
+    // Re-runs whenever the list or any task's title, description, status or sub-tasks change
     Effect::new(move |_| {
         let stored: Vec<StoredTask> =
             tasks.with(|tasks| tasks.iter().map(StoredTask::from).collect());
@@ -262,6 +262,7 @@ fn App() -> impl IntoView {
                                                     {move || task_title.get()}
                                                 </h3>
                                                 <p class="mt-1 text-sm whitespace-pre-line text-slate-600 dark:text-slate-400">{move || task_description.get()}</p>
+                                                <SubtaskList subtasks=task.subtasks />
                                                 <select
                                                     aria-label="Status"
                                                     class=move || format!(
@@ -340,6 +341,214 @@ fn App() -> impl IntoView {
                 </div>
             </Show>
         </main>
+    }
+}
+
+/// A task's checklist, with an inline form to add more sub-tasks
+#[component]
+fn SubtaskList(subtasks: RwSignal<Vec<Subtask>>) -> impl IntoView {
+    let adding = RwSignal::new(false);
+    let new_title = RwSignal::new(String::new());
+    let input = NodeRef::<leptos::html::Input>::new();
+
+    // Put the cursor in the input as soon as it appears
+    Effect::new(move |_| {
+        if let Some(input) = input.get() {
+            let _ = input.focus();
+        }
+    });
+
+    let total = move || subtasks.with(Vec::len);
+    let has_subtasks = move || subtasks.with(|subtasks| !subtasks.is_empty());
+    let done_count = move || {
+        subtasks.with(|subtasks| subtasks.iter().filter(|subtask| subtask.done.get()).count())
+    };
+
+    // Keeps the input open afterwards, so several sub-tasks can be added in a row
+    let add_subtask = move || {
+        let title = new_title.get_untracked().trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        subtasks.update(|subtasks| {
+            let id = subtasks.iter().map(|subtask| subtask.id).max().unwrap_or(0) + 1;
+            subtasks.push(Subtask::new(id, &title, false));
+        });
+        new_title.set(String::new());
+    };
+    let close_form = move || {
+        adding.set(false);
+        new_title.set(String::new());
+    };
+
+    view! {
+        <div class="mt-3 flex flex-col gap-2">
+            <Show when=has_subtasks>
+                <ul class="flex flex-col gap-1.5">
+                    <For
+                        each=move || subtasks.get()
+                        key=|subtask| subtask.id
+                        children=move |subtask| {
+                            let id = subtask.id;
+                            let done = subtask.done;
+                            let title = subtask.title;
+
+                            // Edits go into a draft, so Escape leaves the title untouched
+                            let editing = RwSignal::new(false);
+                            let draft = RwSignal::new(String::new());
+                            let input = NodeRef::<leptos::html::Input>::new();
+
+                            Effect::new(move |_| {
+                                if let Some(input) = input.get() {
+                                    let _ = input.focus();
+                                    input.select();
+                                }
+                            });
+
+                            let start_editing = move || {
+                                draft.set(title.get_untracked());
+                                editing.set(true);
+                            };
+                            // Also runs on blur, so it must be a no-op once editing has ended
+                            let save_edit = move || {
+                                if !editing.get_untracked() {
+                                    return;
+                                }
+                                let new_title = draft.get_untracked().trim().to_string();
+                                if !new_title.is_empty() {
+                                    title.set(new_title);
+                                }
+                                editing.set(false);
+                            };
+
+                            view! {
+                                <li class="group/subtask flex items-center gap-2 text-sm">
+                                    <input
+                                        type="checkbox"
+                                        aria-label="Mark sub-task as done"
+                                        class="size-4 shrink-0 cursor-pointer accent-indigo-600"
+                                        prop:checked=move || done.get()
+                                        on:change=move |event| done.set(event_target_checked(&event))
+                                    />
+                                    <Show
+                                        when=move || editing.get()
+                                        fallback=move || view! {
+                                            <span
+                                                class="min-w-0 flex-1 truncate"
+                                                class:line-through=move || done.get()
+                                                class:text-slate-400=move || done.get()
+                                                title="Double-click to edit"
+                                                on:dblclick=move |_| start_editing()
+                                            >
+                                                {move || title.get()}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                aria-label="Edit sub-task"
+                                                title="Edit sub-task"
+                                                class="shrink-0 rounded p-0.5 text-slate-400 transition hover:bg-indigo-50 hover:text-indigo-600 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none sm:opacity-0 sm:group-hover/subtask:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300"
+                                                on:click=move |_| start_editing()
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4">
+                                                    <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                                                </svg>
+                                            </button>
+                                        }
+                                    >
+                                        <input
+                                            type="text"
+                                            aria-label="Sub-task title"
+                                            class="min-w-0 flex-1 rounded-md border border-slate-300 bg-transparent px-2 py-0.5 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none dark:border-slate-700"
+                                            node_ref=input
+                                            bind:value=draft
+                                            on:keydown=move |event| match event.key().as_str() {
+                                                "Enter" => {
+                                                    event.prevent_default();
+                                                    save_edit();
+                                                }
+                                                "Escape" => editing.set(false),
+                                                _ => {}
+                                            }
+                                            on:blur=move |_| save_edit()
+                                        />
+                                    </Show>
+                                    <button
+                                        type="button"
+                                        aria-label="Remove sub-task"
+                                        title="Remove sub-task"
+                                        class="shrink-0 rounded p-0.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none sm:opacity-0 sm:group-hover/subtask:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                        on:click=move |_| subtasks.update(|subtasks| subtasks.retain(|subtask| subtask.id != id))
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4">
+                                            <path d="M18 6 6 18M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                </li>
+                            }
+                        }
+                    />
+                </ul>
+            </Show>
+
+            <Show
+                when=move || adding.get()
+                fallback=move || view! {
+                    <div class="flex items-center justify-between gap-2">
+                        <button
+                            type="button"
+                            class="-ml-1 flex items-center gap-1 rounded-lg px-1 py-0.5 text-sm font-medium text-indigo-600 transition hover:bg-indigo-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none dark:text-indigo-400 dark:hover:bg-indigo-500/10"
+                            on:click=move |_| adding.set(true)
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4">
+                                <path d="M12 5v14M5 12h14" />
+                            </svg>
+                            "Add sub-task"
+                        </button>
+                        <Show when=has_subtasks>
+                            <span class="text-xs text-slate-500 dark:text-slate-400">
+                                {done_count} "/" {total} " done"
+                            </span>
+                        </Show>
+                    </div>
+                }
+            >
+                <form
+                    class="flex items-center gap-2"
+                    on:submit=move |event| {
+                        event.prevent_default();
+                        add_subtask();
+                    }
+                    on:keydown=move |event| {
+                        if event.key() == "Escape" {
+                            close_form();
+                        }
+                    }
+                >
+                    <input
+                        type="text"
+                        placeholder="New sub-task"
+                        aria-label="New sub-task"
+                        class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-transparent px-3 py-1.5 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 focus:outline-none dark:border-slate-700"
+                        node_ref=input
+                        bind:value=new_title
+                    />
+                    <button
+                        type="submit"
+                        class="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:focus-visible:ring-offset-slate-900"
+                        disabled=move || new_title.with(|title| title.trim().is_empty())
+                    >
+                        "Add"
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-lg px-2 py-1.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:outline-none dark:text-slate-300 dark:hover:bg-slate-800"
+                        on:click=move |_| close_form()
+                    >
+                        "Done"
+                    </button>
+                </form>
+            </Show>
+        </div>
     }
 }
 
@@ -426,13 +635,23 @@ fn initial_tasks() -> Vec<Item> {
             "Style the app with Tailwind",
             "Let Trunk run tailwindcss on every build.",
             Status::InProgress,
-        ),
+        )
+        .with_subtasks(&[
+            ("Add tailwindcss_4 to the flake", true),
+            ("Pin the version in Trunk.toml", true),
+            ("Support dark mode", false),
+        ]),
         Item::new(
             4,
             "Learn ownership and borrowing",
             "Read chapter 4 of The Rust Book and redo the exercises.",
             Status::InProgress,
-        ),
+        )
+        .with_subtasks(&[
+            ("4.1 What is ownership?", true),
+            ("4.2 References and borrowing", false),
+            ("4.3 The slice type", false),
+        ]),
         Item::new(
             5,
             "Write unit tests with cargo test",
@@ -480,6 +699,16 @@ struct StoredTask {
     title: String,
     description: String,
     status: Status,
+    // Tasks saved before sub-tasks existed have no such field
+    #[serde(default)]
+    subtasks: Vec<StoredSubtask>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredSubtask {
+    id: u32,
+    title: String,
+    done: bool,
 }
 
 impl From<&Item> for StoredTask {
@@ -489,13 +718,31 @@ impl From<&Item> for StoredTask {
             title: item.title.get(),
             description: item.description.get(),
             status: item.status.get(),
+            subtasks: item.subtasks.with(|subtasks| {
+                subtasks
+                    .iter()
+                    .map(|subtask| StoredSubtask {
+                        id: subtask.id,
+                        title: subtask.title.get(),
+                        done: subtask.done.get(),
+                    })
+                    .collect()
+            }),
         }
     }
 }
 
 impl From<StoredTask> for Item {
     fn from(stored: StoredTask) -> Self {
-        Item::new(stored.id, &stored.title, &stored.description, stored.status)
+        let item = Item::new(stored.id, &stored.title, &stored.description, stored.status);
+        item.subtasks.set(
+            stored
+                .subtasks
+                .into_iter()
+                .map(|subtask| Subtask::new(subtask.id, &subtask.title, subtask.done))
+                .collect(),
+        );
+        item
     }
 }
 
@@ -506,6 +753,7 @@ struct Item {
     title: RwSignal<String>,
     description: RwSignal<String>,
     status: RwSignal<Status>,
+    subtasks: RwSignal<Vec<Subtask>>,
 }
 
 impl Item {
@@ -515,6 +763,36 @@ impl Item {
             title: RwSignal::new(title.to_string()),
             description: RwSignal::new(description.to_string()),
             status: RwSignal::new(status),
+            subtasks: RwSignal::new(Vec::new()),
+        }
+    }
+
+    /// Seeds the task with `(title, done)` sub-tasks
+    fn with_subtasks(self, subtasks: &[(&str, bool)]) -> Self {
+        self.subtasks.set(
+            subtasks
+                .iter()
+                .zip(1..)
+                .map(|(&(title, done), id)| Subtask::new(id, title, done))
+                .collect(),
+        );
+        self
+    }
+}
+
+#[derive(Clone)]
+struct Subtask {
+    id: u32,
+    title: RwSignal<String>,
+    done: RwSignal<bool>,
+}
+
+impl Subtask {
+    fn new(id: u32, title: &str, done: bool) -> Self {
+        Self {
+            id,
+            title: RwSignal::new(title.to_string()),
+            done: RwSignal::new(done),
         }
     }
 }
