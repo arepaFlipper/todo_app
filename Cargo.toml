@@ -7,4 +7,4 @@ edition = "2024"
 leptos = { version = "0.8.22", features = ["csr"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-web-sys = { version = "0.3.106", features = ["Storage", "Window"] }
+web-sys = { version = "0.3.106", features = ["DomRect", "Element", "HtmlCollection", "HtmlElement", "Navigator", "Storage", "Window"] }

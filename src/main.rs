@@ -1,13 +1,16 @@
 use std::time::Duration;
 
 use leptos::prelude::*;
+use leptos::wasm_bindgen::JsCast;
 use serde::{Deserialize, Serialize};
 
 const STORAGE_KEY: &str = "leptos-todo.tasks";
 /// How long the "Task deleted · Undo" toast stays up
 const UNDO_TIMEOUT: Duration = Duration::from_secs(3);
-/// Fraction of the card's width a swipe must pass to delete the task
-const SWIPE_DELETE_RATIO: f64 = 0.35;
+/// How long a card must be held still before it can be dragged to a new position
+const HOLD_TO_DRAG: Duration = Duration::from_millis(400);
+/// Moving further than this (in px) while holding means a scroll, not a drag
+const HOLD_TOLERANCE: f64 = 8.0;
 
 fn main() {
     mount_to_body(App);
@@ -78,6 +81,85 @@ fn App() -> impl IntoView {
         undo_timer.set_value(timer);
     };
 
+    // Hold-and-drag reordering. Rows follow the pointer through window listeners,
+    // since the dragged row's DOM node moves (and would lose pointer capture) as it passes others
+    let list = NodeRef::<leptos::html::Ol>::new();
+    let drag = RwSignal::new(None::<Drag>);
+    let drag_offset_y = RwSignal::new(0.0_f64);
+    let pointer_y = StoredValue::new(0.0_f64);
+
+    // Moves the dragged row under the pointer; returns its top and height within the list
+    let position_dragged_row = move || -> Option<(TaskRows, f64, f64)> {
+        let Drag { id, grab_offset } = drag.get_untracked()?;
+        let list = list.get_untracked()?;
+        let rows = task_rows(&list);
+        let row = rows.iter().find(|(row_id, _)| *row_id == id)?.1.clone();
+
+        let top = pointer_y.get_value() - list.get_bounding_client_rect().top() - grab_offset;
+        drag_offset_y.set(top - row.offset_top() as f64);
+        Some((rows, top, row.offset_height() as f64))
+    };
+
+    let start_drag = move |id: u32| {
+        let Some(list) = list.get_untracked() else {
+            return;
+        };
+        let Some((_, row)) = task_rows(&list).into_iter().find(|(row_id, _)| *row_id == id) else {
+            return;
+        };
+        let grab_offset =
+            pointer_y.get_value() - list.get_bounding_client_rect().top() - row.offset_top() as f64;
+        drag_offset_y.set(0.0);
+        drag.set(Some(Drag { id, grab_offset }));
+        let _ = window().navigator().vibrate_with_duration(15);
+    };
+
+    let move_drag = move || {
+        let Some(Drag { id, .. }) = drag.get_untracked() else {
+            return;
+        };
+        let Some((rows, top, height)) = position_dragged_row() else {
+            return;
+        };
+        // The new index is the number of other rows whose middle is above the dragged row's middle
+        let center = top + height / 2.0;
+        let target = rows
+            .iter()
+            .filter(|(row_id, row)| {
+                *row_id != id && (row.offset_top() + row.offset_height() / 2) as f64 <= center
+            })
+            .count();
+        let current = tasks.with_untracked(|tasks| tasks.iter().position(|task| task.id == id));
+        if let Some(current) = current
+            && current != target
+        {
+            tasks.update(|tasks| {
+                let task = tasks.remove(current);
+                tasks.insert(target, task);
+            });
+            // The row moved in the DOM, so re-align it with the pointer once the list re-renders
+            request_animation_frame(move || {
+                position_dragged_row();
+            });
+        }
+    };
+
+    let end_drag = move || {
+        if drag.get_untracked().is_some() {
+            drag.set(None);
+            drag_offset_y.set(0.0);
+        }
+    };
+
+    let _ = window_event_listener(leptos::ev::pointermove, move |event| {
+        if drag.get_untracked().is_some() {
+            pointer_y.set_value(event.client_y() as f64);
+            move_drag();
+        }
+    });
+    let _ = window_event_listener(leptos::ev::pointerup, move |_| end_drag());
+    let _ = window_event_listener(leptos::ev::pointercancel, move |_| end_drag());
+
     let undo_delete = move || {
         clear_undo_timer();
         let deleted = last_deleted.write().take();
@@ -136,7 +218,11 @@ fn App() -> impl IntoView {
                     </p>
                 }
             >
-                <ol class="flex flex-col gap-3">
+                <ol
+                    node_ref=list
+                    class="relative flex flex-col gap-3"
+                    class:select-none=move || drag.with(Option::is_some)
+                >
                     <For
                         each=move || tasks.get()
                         key=|task| task.id
@@ -166,79 +252,79 @@ fn App() -> impl IntoView {
                                 editing.set(false);
                             };
 
-                            // Swipe left to delete, on touch screens only
-                            let row = NodeRef::<leptos::html::Li>::new();
-                            let swipe_start_x = StoredValue::new(None::<f64>);
-                            let swipe_offset = RwSignal::new(0.0_f64);
-                            let swiping = RwSignal::new(false);
-
-                            let reset_swipe = move || {
-                                swipe_start_x.set_value(None);
-                                swiping.set(false);
-                                swipe_offset.set(0.0);
+                            // Hold still to pick the row up for reordering
+                            let hold_origin = StoredValue::new(None::<(f64, f64)>);
+                            let hold_timer = StoredValue::new(None::<TimeoutHandle>);
+                            let cancel_hold = move || {
+                                if let Some(timer) = hold_timer.get_value() {
+                                    timer.clear();
+                                }
+                                hold_timer.set_value(None);
+                                hold_origin.set_value(None);
                             };
+                            let is_dragging = move || drag.with(|drag| drag.is_some_and(|drag| drag.id == id));
 
                             view! {
                                 <li
-                                    node_ref=row
-                                    class="relative touch-pan-y"
-                                    on:pointerdown=move |event| {
-                                        if event.pointer_type() == "touch" && !editing.get_untracked() {
-                                            swipe_start_x.set_value(Some(event.client_x() as f64));
+                                    data-task-id=id
+                                    class="relative transition-transform duration-200 [-webkit-touch-callout:none]"
+                                    class:z-20=is_dragging
+                                    style:transform=move || {
+                                        if is_dragging() {
+                                            format!("translateY({}px) scale(1.02)", drag_offset_y.get())
+                                        } else {
+                                            String::new()
                                         }
+                                    }
+                                    style:transition=move || if is_dragging() { "none" } else { "" }
+                                    on:pointerdown=move |event| {
+                                        if editing.get_untracked() || event.button() != 0 || is_interactive_target(&event) {
+                                            return;
+                                        }
+                                        pointer_y.set_value(event.client_y() as f64);
+                                        hold_origin.set_value(Some((event.client_x() as f64, event.client_y() as f64)));
+                                        let timer = set_timeout_with_handle(
+                                            move || {
+                                                hold_timer.set_value(None);
+                                                hold_origin.set_value(None);
+                                                start_drag(id);
+                                            },
+                                            HOLD_TO_DRAG,
+                                        )
+                                        .ok();
+                                        hold_timer.set_value(timer);
                                     }
                                     on:pointermove=move |event| {
-                                        let Some(start_x) = swipe_start_x.get_value() else {
-                                            return;
-                                        };
-                                        let offset = (event.client_x() as f64 - start_x).min(0.0);
-                                        // Ignore small movements, so taps on the checkbox or status still work
-                                        if !swiping.get_untracked() {
-                                            if offset > -10.0 {
-                                                return;
-                                            }
-                                            swiping.set(true);
-                                            if let Some(row) = row.get_untracked() {
-                                                let _ = row.set_pointer_capture(event.pointer_id());
-                                            }
-                                        }
-                                        swipe_offset.set(offset);
-                                    }
-                                    on:pointerup=move |_| {
-                                        if !swiping.get_untracked() {
-                                            swipe_start_x.set_value(None);
+                                        if drag.with_untracked(Option::is_some) {
                                             return;
                                         }
-                                        let width = row
-                                            .get_untracked()
-                                            .map(|row| row.offset_width() as f64)
-                                            .unwrap_or(0.0);
-                                        if swipe_offset.get_untracked() < -width * SWIPE_DELETE_RATIO {
-                                            // Slide the card the rest of the way out, then delete it
-                                            swipe_start_x.set_value(None);
-                                            swiping.set(false);
-                                            swipe_offset.set(-width);
-                                            set_timeout(move || delete_task(id), Duration::from_millis(200));
-                                        } else {
-                                            reset_swipe();
+                                        pointer_y.set_value(event.client_y() as f64);
+                                        if let Some((x, y)) = hold_origin.get_value() {
+                                            let moved = (event.client_x() as f64 - x).hypot(event.client_y() as f64 - y);
+                                            if moved > HOLD_TOLERANCE {
+                                                cancel_hold();
+                                            }
                                         }
                                     }
-                                    on:pointercancel=move |_| reset_swipe()
+                                    on:pointerup=move |_| cancel_hold()
+                                    on:pointercancel=move |_| cancel_hold()
+                                    // Stop the page from scrolling while a row is being dragged (listeners
+                                    // are on the element, not delegated, so preventDefault works)
+                                    on:touchmove=move |event| {
+                                        if is_dragging() {
+                                            event.prevent_default();
+                                        }
+                                    }
+                                    // Long-pressing would otherwise open the browser's context menu
+                                    on:contextmenu=move |event| {
+                                        if hold_timer.get_value().is_some() || is_dragging() {
+                                            event.prevent_default();
+                                        }
+                                    }
                                 >
-                                <div
-                                    aria-hidden="true"
-                                    class="absolute inset-0 flex items-center justify-end rounded-xl bg-red-500 pr-5 text-white transition-opacity"
-                                    class:opacity-0=move || swipe_offset.get() == 0.0
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-6">
-                                        <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
-                                    </svg>
-                                </div>
                                 <div
                                     class="group relative flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition duration-200 hover:border-indigo-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-indigo-500/50"
-                                    style:transform=move || format!("translateX({}px)", swipe_offset.get())
-                                    // Follow the finger exactly while dragging; animate only the snap back or slide out
-                                    style:transition=move || if swiping.get() { "none" } else { "" }
+                                    class=(["shadow-xl", "ring-2", "ring-indigo-400"], is_dragging)
                                 >
                                     <input
                                         type="checkbox"
@@ -303,7 +389,7 @@ fn App() -> impl IntoView {
                                             type="button"
                                             aria-label="Delete task"
                                             title="Delete task"
-                                            class="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none max-sm:hidden sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                            class="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:outline-none sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                                             on:click=move |_| delete_task(id)
                                         >
                                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5">
@@ -671,6 +757,37 @@ fn initial_tasks() -> Vec<Item> {
             Status::Todo,
         ),
     ]
+}
+
+/// The task being dragged, and where on its row it was grabbed
+#[derive(Clone, Copy)]
+struct Drag {
+    id: u32,
+    grab_offset: f64,
+}
+
+/// Task ids paired with their `<li>` rows
+type TaskRows = Vec<(u32, web_sys::HtmlElement)>;
+
+/// The list's task rows, in on-screen order
+fn task_rows(list: &web_sys::HtmlElement) -> TaskRows {
+    let children = list.children();
+    (0..children.length())
+        .filter_map(|index| children.item(index))
+        .filter_map(|element| {
+            let id = element.get_attribute("data-task-id")?.parse().ok()?;
+            Some((id, element.dyn_into().ok()?))
+        })
+        .collect()
+}
+
+/// Whether the event started on a control, where holding shouldn't start a drag
+fn is_interactive_target(event: &leptos::ev::PointerEvent) -> bool {
+    event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .and_then(|element| element.closest("input, textarea, select, button, a").ok().flatten())
+        .is_some()
 }
 
 fn local_storage() -> Option<web_sys::Storage> {
