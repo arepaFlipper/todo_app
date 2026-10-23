@@ -11,6 +11,12 @@ const UNDO_TIMEOUT: Duration = Duration::from_secs(3);
 const HOLD_TO_DRAG: Duration = Duration::from_millis(400);
 /// Moving further than this (in px) while holding means a scroll, not a drag
 const HOLD_TOLERANCE: f64 = 8.0;
+/// Dragging within this distance (in px) of the top or bottom of the screen scrolls the page
+const AUTO_SCROLL_EDGE: f64 = 80.0;
+/// How far (in px) the page scrolls per tick when the pointer is right at the screen's edge
+const AUTO_SCROLL_MAX_STEP: f64 = 18.0;
+/// How often the page scrolls while a row is held near an edge (~60fps)
+const AUTO_SCROLL_TICK: Duration = Duration::from_millis(16);
 
 fn main() {
     mount_to_body(App);
@@ -87,6 +93,7 @@ fn App() -> impl IntoView {
     let drag = RwSignal::new(None::<Drag>);
     let drag_offset_y = RwSignal::new(0.0_f64);
     let pointer_y = StoredValue::new(0.0_f64);
+    let auto_scroll_timer = StoredValue::new(None::<IntervalHandle>);
 
     // Moves the dragged row under the pointer; returns its top and height within the list
     let position_dragged_row = move || -> Option<(TaskRows, f64, f64)> {
@@ -98,20 +105,6 @@ fn App() -> impl IntoView {
         let top = pointer_y.get_value() - list.get_bounding_client_rect().top() - grab_offset;
         drag_offset_y.set(top - row.offset_top() as f64);
         Some((rows, top, row.offset_height() as f64))
-    };
-
-    let start_drag = move |id: u32| {
-        let Some(list) = list.get_untracked() else {
-            return;
-        };
-        let Some((_, row)) = task_rows(&list).into_iter().find(|(row_id, _)| *row_id == id) else {
-            return;
-        };
-        let grab_offset =
-            pointer_y.get_value() - list.get_bounding_client_rect().top() - row.offset_top() as f64;
-        drag_offset_y.set(0.0);
-        drag.set(Some(Drag { id, grab_offset }));
-        let _ = window().navigator().vibrate_with_duration(15);
     };
 
     let move_drag = move || {
@@ -144,7 +137,40 @@ fn App() -> impl IntoView {
         }
     };
 
+    let start_drag = move |id: u32| {
+        let Some(list) = list.get_untracked() else {
+            return;
+        };
+        let Some((_, row)) = task_rows(&list).into_iter().find(|(row_id, _)| *row_id == id) else {
+            return;
+        };
+        let grab_offset =
+            pointer_y.get_value() - list.get_bounding_client_rect().top() - row.offset_top() as f64;
+        drag_offset_y.set(0.0);
+        drag.set(Some(Drag { id, grab_offset }));
+        let _ = window().navigator().vibrate_with_duration(15);
+
+        // Holding the row near the top or bottom of the screen scrolls the page that way,
+        // faster the closer it gets to the edge, so it can be moved past what's visible
+        let timer = set_interval_with_handle(
+            move || {
+                let step = auto_scroll_step(pointer_y.get_value());
+                if step != 0.0 {
+                    window().scroll_by_with_x_and_y(0.0, step);
+                    move_drag();
+                }
+            },
+            AUTO_SCROLL_TICK,
+        )
+        .ok();
+        auto_scroll_timer.set_value(timer);
+    };
+
     let end_drag = move || {
+        if let Some(timer) = auto_scroll_timer.get_value() {
+            timer.clear();
+            auto_scroll_timer.set_value(None);
+        }
         if drag.get_untracked().is_some() {
             drag.set(None);
             drag_offset_y.set(0.0);
@@ -789,6 +815,19 @@ fn initial_tasks() -> Vec<Item> {
 struct Drag {
     id: u32,
     grab_offset: f64,
+}
+
+/// How far to scroll the page for a drag at `pointer_y`: negative near the top of the
+/// screen, positive near the bottom, and zero anywhere in between
+fn auto_scroll_step(pointer_y: f64) -> f64 {
+    let Some(height) = window().inner_height().ok().and_then(|height| height.as_f64()) else {
+        return 0.0;
+    };
+    // 0 at the edge of the zone, 1 at (or past) the screen's edge
+    let depth = |distance: f64| ((AUTO_SCROLL_EDGE - distance) / AUTO_SCROLL_EDGE).clamp(0.0, 1.0);
+    let up = depth(pointer_y);
+    let down = depth(height - pointer_y);
+    (down - up) * AUTO_SCROLL_MAX_STEP
 }
 
 /// Task ids paired with their `<li>` rows
