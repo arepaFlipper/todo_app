@@ -320,6 +320,10 @@ fn App() -> impl IntoView {
                                     data-task-id=id
                                     class="relative transition-transform duration-200 [-webkit-touch-callout:none]"
                                     class:z-20=is_dragging
+                                    // A pointing hand hints the row can be picked up; a closed hand
+                                    // (over its buttons too) while it's held
+                                    class:cursor-pointer=move || !editing.get() && !is_dragging()
+                                    class=(["cursor-grabbing", "**:cursor-grabbing"], is_dragging)
                                     style:transform=move || {
                                         if is_dragging() {
                                             format!("translateY({}px) scale(1.02)", drag_offset_y.get())
